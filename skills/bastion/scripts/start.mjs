@@ -47,17 +47,24 @@ const server = await createServer({
   skipPidFile: true,
 });
 
+const connectionInfo = {
+  port: server.port,
+  host: server.host,
+  url: server.url,
+  dashboardUrl: server.dashboardUrl,
+  authToken: server.authToken,
+  caCertPath: server.caCertPath,
+};
+
 // Output connection info as JSON (single line)
-console.log(
-  JSON.stringify({
-    port: server.port,
-    host: server.host,
-    url: server.url,
-    dashboardUrl: server.dashboardUrl,
-    authToken: server.authToken,
-    caCertPath: server.caCertPath,
-  }),
-);
+console.log(JSON.stringify(connectionInfo));
+
+// Persist connection info so agents can read it
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+const bastionDir = join(process.env.HOME || "/home/node", ".bastion");
+mkdirSync(bastionDir, { recursive: true });
+writeFileSync(join(bastionDir, "connection.json"), JSON.stringify(connectionInfo, null, 2));
 
 server.on("dlp:finding", (e) => {
   process.stderr.write(`[bastion:dlp] ${e.patternName} on ${e.requestId} (${e.action})\n`);
