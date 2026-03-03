@@ -1,0 +1,51 @@
+{
+  "id": "bastion",
+  "name": "Bastion AI Gateway",
+  "description": "Local-first security gateway for LLM requests — DLP scanning, tool call monitoring, audit logging.",
+  "version": "0.1.0",
+  "skills": ["skills/bastion"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "autoStart": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically start Bastion when OpenClaw gateway starts"
+      },
+      "port": {
+        "type": "number",
+        "default": 0,
+        "description": "Bastion listen port (0 = random)"
+      },
+      "silent": {
+        "type": "boolean",
+        "default": true
+      },
+      "logLevel": {
+        "type": "string",
+        "enum": ["debug", "info", "warn", "error"],
+        "default": "info"
+      },
+      "setProxy": {
+        "type": "boolean",
+        "default": false,
+        "description": "Automatically set HTTPS_PROXY and NODE_EXTRA_CA_CERTS env vars"
+      }
+    }
+  },
+  "uiHints": {
+    "autoStart": {
+      "label": "Auto Start",
+      "help": "Start Bastion automatically with OpenClaw gateway"
+    },
+    "port": {
+      "label": "Port",
+      "help": "Port for Bastion to listen on (0 = random available port)"
+    },
+    "setProxy": {
+      "label": "Set Proxy Env",
+      "help": "Automatically configure HTTPS_PROXY so LLM traffic routes through Bastion"
+    }
+  }
+}
