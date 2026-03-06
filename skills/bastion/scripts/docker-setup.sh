@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# One-click setup for Bastion in OpenClaw Docker container.
+# Bastion AI Gateway — Docker setup & upgrade for OpenClaw.
 #
-# Run 1: Patches docker-compose.yml (env vars, volume, command wrapper)
-#         → tells user to recreate the container, then exits.
-# Run 2: Installs @aion0/bastion, rebuilds native deps, verifies health.
+# Usage:
+#   bash docker-setup.sh                          # first-time setup
+#   bash docker-setup.sh upgrade                  # upgrade bastion + skill scripts
+#   bash docker-setup.sh [CONTAINER] [PORT] [DIR] # explicit args
 #
-# After setup, every `docker compose restart` auto-starts Bastion.
-# A `docker compose down/up` loses the package — re-run this script.
+# Setup (first run):
+#   1. Patches docker-compose.yml (env vars, volume, command wrapper)
+#   2. Installs @aion0/bastion, rebuilds native deps, verifies health
 #
-# Usage: bash docker-setup.sh [CONTAINER_NAME] [PORT] [COMPOSE_DIR]
-#
-# Examples:
-#   bash docker-setup.sh                                              # defaults
-#   bash docker-setup.sh openclaw-openclaw-gateway-1 8420 ~/openclaw  # explicit
+# Upgrade:
+#   1. Updates skill scripts from npm (@aion0/bastion-skills)
+#   2. Upgrades @aion0/bastion in Docker container
+#   3. Restarts bastion process
 set -euo pipefail
+
+# ── Detect "upgrade" subcommand ──────────────────────────────────────
+
+ACTION="setup"
+if [ "${1:-}" = "upgrade" ]; then
+  ACTION="upgrade"
+  shift
+fi
 
 CONTAINER="${1:-openclaw-openclaw-gateway-1}"
 PORT="${2:-8420}"
 COMPOSE_DIR="${3:-}"
 
-# ── Locate docker-compose.yml ──────────────────────────────────────
+# ── Locate docker-compose.yml ────────────────────────────────────────
 
 find_compose() {
   if [ -n "$COMPOSE_DIR" ]; then
@@ -37,11 +46,99 @@ find_compose() {
 COMPOSE_FILE=$(find_compose)
 if [ -z "$COMPOSE_FILE" ] || [ ! -f "$COMPOSE_FILE" ]; then
   echo "ERROR: docker-compose.yml not found."
-  echo "  Pass the directory as 3rd arg: bash docker-setup.sh <container> <port> <compose-dir>"
+  echo "  Pass the directory as arg: bash docker-setup.sh [upgrade] <container> <port> <compose-dir>"
   exit 1
 fi
 
 COMPOSE_DIR="$(cd "$(dirname "$COMPOSE_FILE")" && pwd)"
+
+# ── Resolve skill directory ──────────────────────────────────────────
+
+# This script lives in skills/bastion/scripts/ — skill root is two levels up
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Deployed location (where openclaw reads skills from)
+DEPLOY_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw}/skills/bastion"
+
+# ══════════════════════════════════════════════════════════════════════
+# UPGRADE MODE
+# ══════════════════════════════════════════════════════════════════════
+
+if [ "$ACTION" = "upgrade" ]; then
+  echo "==> Upgrading Bastion skill + package..."
+
+  # ── Step 1: Update skill scripts from npm ──
+  echo ""
+  echo "==> Updating skill scripts..."
+  TMPDIR=$(mktemp -d)
+  trap 'rm -rf "$TMPDIR"' EXIT
+
+  # Download latest @aion0/bastion-skills tarball
+  npm pack @aion0/bastion-skills --pack-destination "$TMPDIR" 2>/dev/null
+  TARBALL=$(ls "$TMPDIR"/aion0-bastion-skills-*.tgz 2>/dev/null | head -1)
+
+  if [ -z "$TARBALL" ]; then
+    echo "    WARNING: @aion0/bastion-skills not found on npm, skipping skill update"
+  else
+    # Extract and copy skill files
+    mkdir -p "$TMPDIR/extracted"
+    tar xzf "$TARBALL" --strip-components=1 -C "$TMPDIR/extracted"
+
+    if [ -d "$TMPDIR/extracted/skills/bastion" ]; then
+      cp -r "$TMPDIR/extracted/skills/bastion/scripts/" "$DEPLOY_DIR/scripts/"
+      # Update SKILL.md if present
+      [ -f "$TMPDIR/extracted/skills/bastion/SKILL.md" ] && \
+        cp "$TMPDIR/extracted/skills/bastion/SKILL.md" "$DEPLOY_DIR/SKILL.md"
+
+      NEW_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$TMPDIR/extracted/package.json','utf8')).version)" 2>/dev/null || echo "?")
+      echo "    Skill scripts updated to v${NEW_VER}"
+    else
+      echo "    WARNING: skills/bastion not found in tarball, skipping"
+    fi
+  fi
+
+  # ── Step 2: Upgrade @aion0/bastion in container ──
+  echo ""
+  echo "==> Upgrading @aion0/bastion in $CONTAINER ..."
+
+  # Stop existing bastion process
+  docker exec "$CONTAINER" sh -c 'kill $(cat /home/node/.bastion/bastion.pid 2>/dev/null) 2>/dev/null || true'
+  sleep 1
+
+  docker exec --user root -e HTTPS_PROXY= -e HTTP_PROXY= "$CONTAINER" pnpm add -w @aion0/bastion@latest
+
+  # Rebuild native modules
+  echo "==> Rebuilding better-sqlite3..."
+  docker exec --user root -e HTTPS_PROXY= -e HTTP_PROXY= "$CONTAINER" bash -c \
+    'cd /app/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install 2>/dev/null || npx --yes node-gyp rebuild 2>/dev/null || true'
+
+  # ── Step 3: Restart bastion ──
+  echo ""
+  echo "==> Restarting Bastion on port $PORT ..."
+  docker exec -d "$CONTAINER" node /home/node/.openclaw/skills/bastion/scripts/start.mjs --port "$PORT"
+  sleep 3
+
+  # Health check
+  HEALTH=$(docker exec "$CONTAINER" curl -s "http://127.0.0.1:${PORT}/health" 2>/dev/null || true)
+  if [ -n "$HEALTH" ]; then
+    echo "    Bastion is running: $HEALTH"
+  else
+    echo "    WARNING: Bastion may still be starting."
+  fi
+
+  # Show versions
+  echo ""
+  PKG_VER=$(docker exec "$CONTAINER" node -e "console.log(JSON.parse(require('fs').readFileSync('/app/node_modules/@aion0/bastion/package.json','utf8')).version)" 2>/dev/null || echo "?")
+  echo "==> Upgrade complete!"
+  echo "    @aion0/bastion: v${PKG_VER}"
+  echo "    Dashboard: http://127.0.0.1:${PORT}/dashboard"
+  exit 0
+fi
+
+# ══════════════════════════════════════════════════════════════════════
+# SETUP MODE (first-time install)
+# ══════════════════════════════════════════════════════════════════════
 
 # ── Phase 0: Ensure Bastion port is exposed ────────────────────────
 
@@ -95,8 +192,8 @@ if ! grep -q "HTTPS_PROXY" "$COMPOSE_FILE"; then
     print "      - sh"
     print "      - -c"
     print "      - >-"
-    print "        (node /home/node/.openclaw/skills/bastion/scripts/start.mjs --port " PORT " &"
-    print "        sleep 2) 2>/dev/null;"
+    print "        (node /home/node/.openclaw/skills/bastion/scripts/start.mjs --port " PORT " 2>>/home/node/.bastion/bastion.log &"
+    print "        sleep 2);"
     print "        exec node dist/index.js gateway --bind ${OPENCLAW_GATEWAY_BIND:-lan} --port 18789"
     cmd_done=1
     next
@@ -185,3 +282,4 @@ echo "    All LLM traffic from OpenClaw now routes through Bastion."
 echo ""
 echo "    Next restart will auto-start Bastion."
 echo "    After 'docker compose down/up', re-run this script to reinstall."
+echo "    To upgrade: bash $(basename "$0") upgrade"

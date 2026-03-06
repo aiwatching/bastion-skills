@@ -34,7 +34,7 @@ const { createServer } = bastion;
 const { values } = parseArgs({
   options: {
     port: { type: "string", default: "0" },
-    silent: { type: "boolean", default: true },
+    silent: { type: "boolean", default: false },
     "db-path": { type: "string" },
   },
   strict: false,
