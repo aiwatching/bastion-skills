@@ -1,11 +1,13 @@
 {
   "name": "@aion0/bastion-skills",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Bastion AI Gateway extension for OpenClaw — DLP scanning, tool guard, and security monitoring",
   "type": "module",
   "main": "index.ts",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "files": [
     "index.ts",
